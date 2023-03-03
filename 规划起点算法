@@ -1,0 +1,124 @@
+% emplanner确定起始规划点
+% 确定起始规划点，根据轨迹拼接的要求需要有上一周期的轨迹的信息，当前时刻的车辆信息与当前时刻的绝对时间
+% 上一周期的轨迹信息 pre_trajectory_x , pre_trajectory_y , pre_trajectory_heading , pre_trajectory_kappa , pre_trajectory_velocity , pre_trajectory_accel , pre_trajectory_time
+% 规划出的轨迹信息的x,y,heading,kappa,是大地坐标系下的数据，velocity的轨迹的切向速度,accel是轨迹的切向加速度
+% 当前时刻currennt_time
+% 当前车辆信息 host_x , host_y , host_heading , host_kappa , host_vx , host_vy , host_ax , host_ay
+% 当前车辆信息全是大地坐标系下的信息
+function [plan_start_x,plan_start_y,plan_start_heading,plan_start_kappa,...
+plan_start_vx,plan_start_vy,plan_start_ax,plan_start_ay,plan_start_time,stitch_x,stitch_y,stitch_heading,stitch_kappa,stitch_speed,stitch_accel,stitch_time]...
+=fcn(pre_trajectory_x,pre_trajectory_y,pre_trajectory_heading,pre_trajectory_kappa,pre_trajectory_velocity,...
+pre_trajectory_accel,pre_trajectory_time,current_time,host_x,host_y,host_heading_xy,host_vx,host_vy,host_ax,host_ay)
+  %初始化输出量
+  stitch_x = zeros(20,1);
+  stitch_y = zeros(20,1);
+  stitch_heading = zeros(20,1);
+  stitch_kappa = zeros(20,1);
+  stitch_speed = zeros(20,1);
+  stitch_accel = zeros(20,1);
+  stitch_time = ones(20,1) * -1;%后续进行轨迹拼接时，判断从哪个点开始，因为拼接的轨迹点可能不到20个，-1是标志位
+  
+  dt = 0.1;
+  %判断程序是否是初次运行，第一次运行没有上一时刻轨迹信息，以车辆动力学外推起点信息
+  persistent is_first_run;
+  if isempty(is_first_run)
+      is_first_run = 0;
+      plan_start_x = host_x;
+      plan_start_y = host_y;
+      plan_start_heading = host_heading_xy;
+      plan_start_kappa = 0;
+      plan_start_vx = 0;
+      plan_start_vy = 0;
+      plan_start_ax = 0;
+      plan_start_ay = 0;
+      plan_start_time = current_time + 0.1;
+  else
+      vx_cur = host_vx * cos(host_heading_xy) - host_vy * sin(host_heading_xy);
+      vy_cur = host_vx * sin(host_heading_xy) + host_vy * cos(host_heading_xy);
+      ax_cur = host_ax * cos(host_heading_xy) - host_ay * sin(host_heading_xy);
+      ay_cur = host_ax * sin(host_heading_xy) + host_ay * cos(host_heading_xy);
+      %程序并不是第一次执行，存在上一周期信息,那么就对控制误差进行判断，看是否进行轨迹重规划还是拼接
+      for i = 1:length(pre_trajectory_time) - 1
+          if (pre_trajectory_time(i) <= current_time && pre_trajectory_time(i + 1) > current_time)
+              %该分支是拿到current_time在上一周期的位置,在标签中的位置是i
+              break;
+          end
+      end
+      %开始计算当前时刻车辆真实位置信息和上一周期在当前时刻的规划点之间的距离
+      %计算两点间距离
+      d_err = [host_x;host_y] - [pre_trajectory_x(i);pre_trajectory_y(i)];
+      %计算切向量和法向量
+      tor = [cos(pre_trajectory_heading(i));sin(pre_trajectory_heading(i))];
+      nor = [-sin(pre_trajectory_heading(i));cos(pre_trajectory_heading(i))];
+      %计算横向误差
+      d_lat = abs(d_err' * nor);
+      %计算纵向误差
+      d_lon = abs(d_err' * tor);
+      %判断横纵向误差是否在要求内，横向0.5 纵向2.5
+      if ((d_lon > 2.5) || (d_lat > 0.5))
+              %控制没有跟踪上，需要重新规划轨迹
+              %使用车辆动力学进行外推
+              plan_start_x = host_x + vx_cur * dt + 0.5 * ax_cur * dt * dt;
+              plan_start_y = host_y + vy_cur * dt + 0.5 * ay_cur * dt * dt;
+              plan_start_vx = vx_cur + ax_cur * dt;
+              plan_start_vy = vy_cur + ay_cur * dt;
+              plan_start_heading = atan2(plan_start_vy,plan_start_vx);
+              plan_start_kappa = 0;
+              plan_start_ax = ax_cur;
+              plan_start_ay = ay_cur;
+              plan_start_time = current_time + 0.1;
+              return;
+          else
+              %控制跟踪上了，则以current+0.1时间在pre_trajectory_time中的位置为规划起点
+              for j = i : length(pre_trajectory_time) - 1
+                  if (current_time + 0.1 >= pre_trajectory_time(j) && current_time + 0.1 < pre_trajectory_time(j + 1))
+                      %拿到current_time在上一周期时间戳的位置
+                      break;
+                  end
+              end
+                  %规划起点就是拿到的下标在pre_trajectory中的位置
+                  plan_start_x = pre_trajectory_x(j);
+                  plan_start_y = pre_trajectory_y(j);
+                  plan_start_heading = pre_trajectory_heading(j);
+                  plan_start_kappa = pre_trajectory_kappa(j);
+                  plan_start_vx = pre_trajectory_velocity(j) * cos(pre_trajectory_heading(j));
+                  plan_start_vy = pre_trajectory_velocity(j) * sin(pre_trajectory_heading(j));
+                  %上一周期中的速度和加速度是切向量，加速度在全局坐标系中要重新算
+                  tor1 = [cos(pre_trajectory_heading(j));sin(pre_trajectory_heading(j))];
+                  nor1 = [-sin(pre_trajectory_heading(j));cos(pre_trajectory_heading(j))];
+                  a_tor = pre_trajectory_accel(j) * tor1;
+                  a_nor = pre_trajectory_velocity(j)^2 * plan_start_kappa * nor1;
+                  plan_start_ax = a_tor(1) + a_nor(1);
+                  plan_start_ay = a_tor(2) + a_nor(2);
+                  plan_start_time = pre_trajectory_time(j);
+                  j = j-1;
+                  if j>= 20
+                     stitch_x = pre_trajectory_x(j-19:j);
+                     stitch_y = pre_trajectory_y(j-19:j);
+                     stitch_heading = pre_trajectory_heading(j-19:j);
+                     stitch_kappa = pre_trajectory_kappa(j-19:j);
+                     stitch_speed = pre_trajectory_velocity(j-19:j);
+                     stitch_accel = pre_trajectory_accel(j-19:j);
+                     stitch_time = pre_trajectory_time(j-19:j);
+                  else
+                     stitch_x(20-j+1:20) = pre_trajectory_x(1:j);
+                     stitch_y(20-j+1:20) = pre_trajectory_y(1:j);
+                     stitch_heading(20-j+1:20) = pre_trajectory_heading(1:j);
+                     stitch_kappa(20-j+1:20) = pre_trajectory_kappa(1:j);
+                     stitch_speed(20-j+1:20) = pre_trajectory_velocity(1:j);
+                     stitch_accel(20-j+1:20) = pre_trajectory_accel(1:j);
+                     stitch_time(20-j+1:20) = pre_trajectory_time(1:j);
+                  end 
+              
+          end
+  end
+  
+      
+      
+                  
+                  
+                  
+                  
+              
+              
+    
