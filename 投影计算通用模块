@@ -1,0 +1,210 @@
+function [match_point_index_set,proj_x_set,proj_y_set,proj_heading_set,proj_kappa_set] = ...
+    fcn(x_set,y_set,frenet_path_x,frenet_path_y,frenet_path_heading,frenet_path_kappa)
+%该函数将批量计算x_set，y_set中的xy，在frenet_path下的投影的信息
+%输入 x_set,y_set，待投影的点的集合
+%x_set,y_set,frenet_path_x,frenet_path_y,frenet_path_heading,frenet_path_kappa
+%曲线在直角坐标系下的x，y，heading，kappa
+%输出：match_point_index_set 匹配点在frenet_path下的编号的集合(即从全局路径第一个点开始数，第几个点是匹配点)
+%     proj_x y heading kappa 投影的x,y,heading,kappa的集合
+
+% 由于事先不知道x_set中到底有多少个点需要投影，因此事先声明一个最大的数量的点作为缓冲
+n = 128;
+% 并且由于不知道投影点的个数，所以也不知道输出的个数，因此输出也要做缓冲，用nan表示不存在的点
+% 输出最多输出128个
+% 输出初始化
+match_point_index_set = ones(n,1) * nan;
+proj_x_set = ones(n,1) * nan;
+proj_y_set = ones(n,1) * nan;
+proj_heading_set = ones(n,1) * nan;
+proj_kappa_set = ones(n,1) * nan;
+
+%找匹配点，需要利用上一个周期的结果作为下一个周期遍历的起点，因此需要声明两个全局变量
+persistent is_first_run;
+persistent pre_match_point_index_set;
+persistent pre_frenet_path_x;
+persistent pre_frenet_path_y;
+persistent pre_frenet_path_heading;
+persistent pre_frenet_path_kappa;
+%算法主函数入口
+
+if isempty(is_first_run)
+    %该if分支表示函数首次运行
+    is_first_run = 0;
+    pre_frenet_path_x = frenet_path_x;
+    pre_frenet_path_y = frenet_path_y;
+    pre_frenet_path_heading = frenet_path_heading;
+    pre_frenet_path_kappa = frenet_path_kappa;
+    %要记录首次运行计算的匹配点的结果供下个周期运行，先初始化
+    pre_match_point_index_set = ones(n,1) * nan;
+    %对x_set,y_set的点做遍历，找到他们的匹配点
+    for i = 1 : length(x_set)
+        if isnan(x_set(i))
+            break;
+        end
+        %首次运行时，没有任何提示，只能从frenet path的第一个点开始找
+        start_search_index = 1;
+        % 声明increase_count，用于表示在遍历时distance连续增加的个数
+        increase_count = 0;
+        % 开始遍历
+        min_distance = inf;
+        for j = start_search_index : length(frenet_path_x)
+            distance = (x_set(i) - frenet_path_x(j))^2 + (y_set(i) - frenet_path_y(j))^2;
+            if distance < min_distance
+                min_distance = distance;
+                match_point_index_set(i) = j;
+                increase_count = 0;
+            else
+                increase_count = increase_count + 1;
+            end
+            %如果distance连续增加50次就不要再遍历了，节省时间
+            if increase_count > 50
+                break;
+            end
+        end
+        
+        %如何通过匹配点计算投影点，请参见《自动驾驶控制算法第七讲》
+        %或《自动驾驶决策规划算法》第一章第三节
+        
+        %取出匹配点的编号
+        match_point_index = match_point_index_set(i);
+        %取出匹配点的信息
+        match_point_x = frenet_path_x(match_point_index);
+        match_point_y = frenet_path_y(match_point_index);
+        match_point_heading = frenet_path_heading(match_point_index);
+        match_point_kappa = frenet_path_kappa(match_point_index);
+        %计算匹配点的方向向量与法向量
+        vector_match_point = [match_point_x;match_point_y];
+        vector_match_point_direction = [cos(match_point_heading);sin(match_point_heading)];
+        %声明待投影点的位矢
+        vector_r = [x_set(i);y_set(i)];
+        
+       %通过匹配点计算投影点
+       vector_d = vector_r - vector_match_point;
+       ds = vector_d' * vector_match_point_direction;
+       vector_proj_point = vector_match_point + ds * vector_match_point_direction;
+       proj_heading = match_point_heading + match_point_kappa * ds;
+       proj_kappa = match_point_kappa;
+       %计算结果输出
+       proj_x_set(i) = vector_proj_point(1);
+       proj_y_set(i) = vector_proj_point(2);
+       proj_heading_set(i) = proj_heading;
+       proj_kappa_set(i) = proj_kappa;
+    end
+    %匹配点的计算结果保存，供下一个周期使用
+    pre_match_point_index_set = match_point_index_set;
+else
+    %此if分支表示不是首次运行
+    
+    %对每个x_set上的点做处理
+    for i = 1 : length(x_set)
+        %不是首次运行，对于点x_set(i),y_set(i)来说,start_search_index =
+        %pre_match_point_index_set(i)
+        start_search_index = pre_match_point_index_set(i);%上个周期匹配点的编号作为本周期搜索的起点
+        % 声明increase_count，用于表示在遍历时distance连续增加的个数
+                %%%%%%%%%%%%%%
+        %对于检测障碍物而言，当感知第一次检测障碍物时候，算法并不是首次运行,此时
+        %pre_match_point_index_set的值是nan，若还用上一时刻匹配点作为搜索起点必然会出问题，故要修改
+        %声明increase_count_limit
+        increase_count_limit = 5;
+        if isnan(start_search_index)
+            %没有上个周期结果，那就不能只检查五次了
+            increase_count_limit = 50;
+            %搜索七点设置为1
+            start_search_index = 1;
+        end
+        
+        
+        increase_count = 0;
+        % 开始遍历
+        %这里多一个步骤，判断遍历的方向
+        %计算上个周期匹配点的位矢
+        vector_pre_match_point = [pre_frenet_path_x(start_search_index);pre_frenet_path_y(start_search_index)];
+        vector_pre_match_point_direction = ...
+            [cos(pre_frenet_path_heading(start_search_index));sin(pre_frenet_path_heading(start_search_index))];
+        %判断遍历的方向
+        flag = ([x_set(i);y_set(i)] - vector_pre_match_point)' * vector_pre_match_point_direction;
+        min_distance = inf;
+        if flag > 0.001
+            for j = start_search_index : length(frenet_path_x)
+                distance = (x_set(i) - frenet_path_x(j))^2 + (y_set(i) - frenet_path_y(j))^2;
+                if distance < min_distance
+                    min_distance = distance;
+                    match_point_index_set(i) = j;
+                    increase_count = 0;
+                else
+                    increase_count = increase_count + 1;
+                end
+                %如果distance连续增加5次就不要再遍历了，节省时间
+                if increase_count > increase_count_limit
+                    break;
+                end
+            end
+        elseif flag < - 0.001
+            for j = start_search_index : -1 : 1
+                distance = (x_set(i) - frenet_path_x(j))^2 + (y_set(i) - frenet_path_y(j))^2;
+                if distance < min_distance
+                    min_distance = distance;
+                    match_point_index_set(i) = j;
+                    increase_count = 0;
+                else
+                    increase_count = increase_count + 1;
+                end
+                %如果distance连续增加5次就不要再遍历了，节省时间
+                if increase_count > increase_count_limit
+                    break;
+                end
+            end
+        else
+            match_point_index_set(i) = start_search_index;
+        end
+        
+        %如何通过匹配点计算投影点，请参见《自动驾驶控制算法第七讲》
+        %或《自动驾驶决策规划算法》第一章第三节
+        
+        %取出匹配点的编号
+        match_point_index = match_point_index_set(i);
+        %取出匹配点的信息
+        match_point_x = frenet_path_x(match_point_index);
+        match_point_y = frenet_path_y(match_point_index);
+        match_point_heading = frenet_path_heading(match_point_index);
+        match_point_kappa = frenet_path_kappa(match_point_index);
+        %计算匹配点的方向向量与法向量
+        vector_match_point = [match_point_x;match_point_y];
+        vector_match_point_direction = [cos(match_point_heading);sin(match_point_heading)];
+        %声明待投影点的位矢
+        vector_r = [x_set(i);y_set(i)];
+        
+       %通过匹配点计算投影点
+       vector_d = vector_r - vector_match_point;
+       ds = vector_d' * vector_match_point_direction;
+       vector_proj_point = vector_match_point + ds * vector_match_point_direction;
+       proj_heading = match_point_heading + match_point_kappa * ds;
+       proj_kappa = match_point_kappa;
+       %计算结果输出
+       proj_x_set(i) = vector_proj_point(1);
+       proj_y_set(i) = vector_proj_point(2);
+       proj_heading_set(i) = proj_heading;
+       proj_kappa_set(i) = proj_kappa;
+  
+    end
+    %匹配点的计算结果保存，供下一个周期使用
+    pre_match_point_index_set = match_point_index_set;
+    pre_frenet_path_x = frenet_path_x;
+    pre_frenet_path_y = frenet_path_y;
+    pre_frenet_path_heading = frenet_path_heading;
+    pre_frenet_path_kappa = frenet_path_kappa;
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
