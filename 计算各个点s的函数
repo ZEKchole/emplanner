@@ -1,0 +1,36 @@
+%%
+%插值函数，计算各个点在参考线下的s值，以投影点为原点
+%输入 reference_x,reference_y,proj_x,proj_y,match_point_index(代码中投影点匹配点信息为origin_x,,origin_y,origin_match_point_index)
+function index2s = fcn(path_x,path_y,origin_x,origin_y,origin_match_point_index)
+  n = 181;
+  index2s = zeros(n,1);
+  for i = 2:length(index2s)
+  %计算每一个点的s值
+  index2s(i) = sqrt((path_x(i) - path_x(i - 1))^2 + (path_y(i) - path_y(i - 1))^2 ) + index2s(i - 1);
+  end
+  %计算投影点的s的值，写一个子函数来调用
+  s = CalcProjIndex(index2s,path_x,path_y,origin_x,origin_y,origin_match_point_index);
+  index2s = index2s - ones(n,1) * s;
+  
+  end
+  
+  function s = CalcProjIndex(index2s,path_x,path_y,proj_x,proj_y,match_point_index)
+    %查找匹配点的index2s
+    s_match_point_index = index2s(match_point_index);
+    vector_1 = [proj_x;proj_y] - [path_x(match_point_index);path_y(match_point_index)];
+    %判断投影点在匹配点之前还是之后
+    %分两种情况，匹配点是最后一个点还是不是最后一个点
+    %第一种匹配点是最后一个点
+    if match_point_index == length(path_x)
+      vector_2 = [path_x(match_point_index) - path_x(match_point_index-1);path_y(match_point_index) - path_y(match_point_index - 1)];
+    else
+      vector_2 = [path_x(match_point_index + 1) - path_x(match_point_index);path_y(match_point_index + 1) - path_y(match_point_index)];
+    end
+    %投影点在匹配点的前方
+    if vector_1' * vector_2 > 0
+    s = s_match_point_index + sqrt(vector_1' * vector_1);
+    else
+    s = s_match_point_index - sqrt(vector_1' * vector_1);
+    end
+  end
+      
